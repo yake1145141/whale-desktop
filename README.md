@@ -51,7 +51,7 @@ cd F:\whale-desktop
 生成绿色版 ZIP 和 Windows 安装程序：
 
 ```powershell
-.\package.ps1 -Version 0.4.0
+.\package.ps1 -Version 0.4.1
 ```
 
 安装程序使用当前用户安装，不要求管理员权限；卸载时保留用户配置、皮肤、账本和日志。

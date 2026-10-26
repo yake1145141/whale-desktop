@@ -198,7 +198,6 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.visible.Store(true)
 	go a.attachWindow()
-	a.startPolling(ctx)
 	a.startConfigWatcher(ctx)
 	a.startBalanceLoop(ctx)
 	if !a.second {
@@ -239,8 +238,17 @@ func (a *App) runRequestedVerification() {
 		script = "window.__whaleDebug && window.__whaleDebug.openMenu()"
 	case hasArg("--verify-lock"):
 		script = "window.__whaleDebug && window.__whaleDebug.lock()"
-	case hasArg("--verify-passthrough"):
-		go a.verifyPassthrough()
+	case hasArg("--verify-open-config"):
+		go func() {
+			time.Sleep(2500 * time.Millisecond)
+			a.paths.Log("verify open config:", a.OpenPath("config"))
+		}()
+		return
+	case hasArg("--verify-open-config-js"):
+		go func() {
+			time.Sleep(3000 * time.Millisecond)
+			runtime.WindowExecJS(a.ctx, "openPath('config')")
+		}()
 		return
 	default:
 		return
@@ -251,24 +259,12 @@ func (a *App) runRequestedVerification() {
 	}()
 }
 
-func (a *App) verifyPassthrough() {
-	time.Sleep(3 * time.Second)
-	startX, startY, ok := a.window.CursorScreen()
-	if !ok {
-		return
-	}
-	bounds := a.window.Bounds()
-	defer platform.SetCursorScreen(startX, startY)
-	platform.SetCursorScreen(bounds.X-100, bounds.Y-100)
-	time.Sleep(250 * time.Millisecond)
-	a.paths.Log("verify passthrough:", a.window.IsPassthrough())
-}
-
 func (a *App) attachWindow() {
 	for i := 0; i < 30; i++ {
 		if a.window.AttachByClass(windowClassName) {
 			a.window.MakeToolWindow()
 			a.restoreWindowPosition()
+			a.reapplyWindowRegion()
 			runtime.WindowSetAlwaysOnTop(a.ctx, a.configSnapshot().AlwaysOnTop)
 			return
 		}
@@ -341,6 +337,13 @@ func (a *App) emit(name string, payload any) {
 
 func (a *App) emitState() {
 	a.emit("whale:state", a.GetState())
+}
+
+// ClientLog records renderer-side action failures in the same diagnostic log as
+// the Go process.
+func (a *App) ClientLog(message string) bool {
+	a.paths.Log("renderer:", message)
+	return true
 }
 
 // GetBalance returns current balance and usage. Manual requests bypass cache.
@@ -469,6 +472,9 @@ func (a *App) SetConfig(patch map[string]any) configResult {
 	if hasKey(patch, "alwaysOnTop") && a.ctx != nil {
 		runtime.WindowSetAlwaysOnTop(a.ctx, cfg.AlwaysOnTop)
 	}
+	if hasKey(patch, "passthrough") {
+		a.reapplyWindowRegion()
+	}
 	if hasAny(patch, "displayMode", "keyboardClickMode", "refreshMs") {
 		a.applyDisplayMode()
 		a.resetBalanceLoop()
@@ -504,6 +510,7 @@ func (a *App) reloadAll() {
 	a.applyDisplayMode()
 	a.resetBalanceLoop()
 	a.rebuildTray()
+	a.reapplyWindowRegion()
 }
 
 func (a *App) startConfigWatcher(ctx context.Context) {
@@ -528,60 +535,52 @@ func (a *App) startConfigWatcher(ctx context.Context) {
 	}()
 }
 
-// UpdateHitRegions supplies the renderer's current interactive areas. Go polls
-// the global cursor so click-through can be turned off even before the pointer
-// reaches an interactive rectangle.
+// UpdateHitRegions applies the renderer's current interactive areas as a native
+// window region. Areas outside the pet, bubble and menu pass clicks through to
+// the desktop without changing the WebView2 child's mouse behavior.
 func (a *App) UpdateHitRegions(regions []HitRegion) bool {
 	a.mu.Lock()
 	a.regions = append(a.regions[:0], regions...)
+	enabled := a.cfg.Config.Passthrough
 	if !a.hitLogged {
 		a.hitLogged = true
 		a.paths.Log("hit regions initialized:", len(regions))
 	}
 	a.mu.Unlock()
+	a.applyWindowRegion(regions, enabled)
 	return true
 }
 
-func (a *App) startPolling(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(25 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				a.updatePassthrough()
-			}
+func (a *App) applyWindowRegion(regions []HitRegion, enabled bool) {
+	if !enabled || a.dragging.Load() {
+		a.window.SetWindowRegion(nil)
+		return
+	}
+	scale := a.window.DPI()
+	if scale <= 0 {
+		scale = 1
+	}
+	clips := make([]platform.ClipRect, 0, len(regions))
+	for _, region := range regions {
+		if region.Width <= 0 || region.Height <= 0 {
+			continue
 		}
-	}()
+		clips = append(clips, platform.ClipRect{
+			Left:   int(math.Round(region.Left * scale)),
+			Top:    int(math.Round(region.Top * scale)),
+			Right:  int(math.Round((region.Left + region.Width) * scale)),
+			Bottom: int(math.Round((region.Top + region.Height) * scale)),
+		})
+	}
+	a.window.SetWindowRegion(clips)
 }
 
-func (a *App) updatePassthrough() {
+func (a *App) reapplyWindowRegion() {
 	a.mu.RLock()
 	regions := append([]HitRegion(nil), a.regions...)
 	enabled := a.cfg.Config.Passthrough
 	a.mu.RUnlock()
-	if len(regions) == 0 || !enabled || a.dragging.Load() {
-		a.window.SetPassthrough(false)
-		return
-	}
-	x, y, ok := a.window.CursorClientDIP()
-	if !ok {
-		return
-	}
-	a.window.SetPassthrough(!pointInRegions(x, y, regions))
-}
-
-func pointInRegions(x, y int, regions []HitRegion) bool {
-	fx, fy := float64(x), float64(y)
-	for _, region := range regions {
-		if fx >= region.Left && fx <= region.Left+region.Width &&
-			fy >= region.Top && fy <= region.Top+region.Height {
-			return true
-		}
-	}
-	return false
+	a.applyWindowRegion(regions, enabled)
 }
 
 // Resize keeps the anchored edge fixed while the pet changes scale or skin.
@@ -700,6 +699,7 @@ func (a *App) DragBegin(_ hitPoint) bool {
 	a.dragging.Store(true)
 	a.dragMu.Unlock()
 
+	a.window.SetWindowRegion(nil)
 	go a.dragLoop(ctx, done, cursorX, cursorY)
 	return true
 }
@@ -763,6 +763,7 @@ func (a *App) endDrag(snap bool) {
 	} else {
 		a.rememberBounds()
 	}
+	a.reapplyWindowRegion()
 }
 
 func (a *App) endDragFromLoop() {
@@ -773,6 +774,7 @@ func (a *App) endDragFromLoop() {
 		cancel()
 	}
 	a.dropSnap()
+	a.reapplyWindowRegion()
 }
 
 func (a *App) dropSnap() {
@@ -985,9 +987,10 @@ func (a *App) OpenPath(which string) bool {
 		err = platform.OpenPath(target)
 	}
 	if err != nil {
-		a.paths.Log("open path failed:", target, err)
+		a.paths.Log("open path failed:", which, target, err)
 		return false
 	}
+	a.paths.Log("open path succeeded:", which, target)
 	return true
 }
 

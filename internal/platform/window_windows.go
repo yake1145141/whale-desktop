@@ -11,9 +11,6 @@ import (
 )
 
 const (
-	wsExLayered     = 0x00080000
-	wsExTransparent = 0x00000020
-
 	swpNoZOrder   = 0x0004
 	swpNoActivate = 0x0010
 
@@ -27,8 +24,6 @@ var (
 	procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
 	procSetWindowLongPtr = user32.NewProc("SetWindowLongPtrW")
 	procGetCursorPos     = user32.NewProc("GetCursorPos")
-	procSetCursorPos     = user32.NewProc("SetCursorPos")
-	procScreenToClient   = user32.NewProc("ScreenToClient")
 	procGetWindowRect    = user32.NewProc("GetWindowRect")
 	procSetWindowPos     = user32.NewProc("SetWindowPos")
 	procGetDpiForWindow  = user32.NewProc("GetDpiForWindow")
@@ -38,6 +33,11 @@ var (
 	procFindWindow       = user32.NewProc("FindWindowW")
 	procShowWindow       = user32.NewProc("ShowWindow")
 	procSetForeground    = user32.NewProc("SetForegroundWindow")
+	procSetWindowRgn     = user32.NewProc("SetWindowRgn")
+	gdi32                = windows.NewLazySystemDLL("gdi32.dll")
+	procCreateRectRgn    = gdi32.NewProc("CreateRectRgn")
+	procCombineRgn       = gdi32.NewProc("CombineRgn")
+	procDeleteObject     = gdi32.NewProc("DeleteObject")
 	instanceMutex        windows.Handle
 )
 
@@ -139,44 +139,49 @@ func (w *Window) handle() uintptr {
 	return w.hwnd
 }
 
-// SetPassthrough toggles transparent mouse hit testing on the top-level window.
-func (w *Window) SetPassthrough(enabled bool) {
+// ClipRect is a physical-pixel rectangle relative to the window.
+type ClipRect struct {
+	Left   int
+	Top    int
+	Right  int
+	Bottom int
+}
+
+// SetWindowRegion clips hit testing to the visible interactive areas. Unlike
+// WS_EX_TRANSPARENT, this leaves the WebView2 child untouched and clickable.
+func (w *Window) SetWindowRegion(rects []ClipRect) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.hwnd == 0 {
 		return
 	}
-	index := int32(-20) // GWL_EXSTYLE; keeps this code valid on 32/64-bit.
-	style, _, _ := procGetWindowLongPtr.Call(w.hwnd, uintptr(index))
-	current := style&wsExTransparent != 0
-	if current == enabled {
+	if len(rects) == 0 {
+		procSetWindowRgn.Call(w.hwnd, 0, 1)
 		return
 	}
-	if enabled {
-		style |= wsExTransparent | wsExLayered
-	} else {
-		style &^= wsExTransparent
+	combined, _, _ := procCreateRectRgn.Call(0, 0, 0, 0)
+	if combined == 0 {
+		return
 	}
-	procSetWindowLongPtr.Call(w.hwnd, uintptr(index), style)
-}
-
-// IsPassthrough reports the current Win32 click-through style.
-func (w *Window) IsPassthrough() bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.hwnd == 0 {
-		return false
+	for _, rect := range rects {
+		if rect.Right <= rect.Left || rect.Bottom <= rect.Top {
+			continue
+		}
+		part, _, _ := procCreateRectRgn.Call(
+			uintptr(rect.Left),
+			uintptr(rect.Top),
+			uintptr(rect.Right),
+			uintptr(rect.Bottom),
+		)
+		if part == 0 {
+			continue
+		}
+		procCombineRgn.Call(combined, combined, part, 2) // RGN_OR
+		procDeleteObject.Call(part)
 	}
-	index := int32(-20)
-	style, _, _ := procGetWindowLongPtr.Call(w.hwnd, uintptr(index))
-	return style&wsExTransparent != 0
-}
-
-// SetCursorScreen moves the global cursor. Used only by the built-in smoke
-// verifier.
-func SetCursorScreen(x, y int) bool {
-	ok, _, _ := procSetCursorPos.Call(uintptr(x), uintptr(y))
-	return ok != 0
+	if ok, _, _ := procSetWindowRgn.Call(w.hwnd, combined, 1); ok == 0 {
+		procDeleteObject.Call(combined)
+	}
 }
 
 // DPI returns the current monitor scaling as a ratio (96 DPI = 1.0).
@@ -190,24 +195,6 @@ func (w *Window) DPI() float64 {
 		return 1
 	}
 	return float64(dpi) / 96
-}
-
-// CursorClientDIP returns the cursor position in the same CSS-pixel coordinate
-// space used by the renderer.
-func (w *Window) CursorClientDIP() (int, int, bool) {
-	hwnd := w.handle()
-	if hwnd == 0 {
-		return 0, 0, false
-	}
-	var p point
-	if ok, _, _ := procGetCursorPos.Call(uintptr(unsafe.Pointer(&p))); ok == 0 {
-		return 0, 0, false
-	}
-	if ok, _, _ := procScreenToClient.Call(hwnd, uintptr(unsafe.Pointer(&p))); ok == 0 {
-		return 0, 0, false
-	}
-	scale := w.DPI()
-	return int(float64(p.X) / scale), int(float64(p.Y) / scale), true
 }
 
 // CursorScreen returns the physical screen cursor position.

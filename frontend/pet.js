@@ -54,6 +54,7 @@ window.whale = {
   setSkin: whaleInvoke('SetSkin'),
   setSound: whaleInvoke('SetSound'),
   quit: whaleInvoke('Quit'),
+  clientLog: whaleInvoke('ClientLog'),
 }
 
 window.whaleReady = whaleBridgeReady.then((app) => {
@@ -1452,17 +1453,17 @@ function buildMenu() {
   menuBox.appendChild(sep())
 
   const openRow = menuRow()
-  const cfgBtn = button('配置文件', () => window.whale.openPath('config'))
-  const linesBtn = button('台词文件', () => window.whale.openPath('lines'))
-  const skinsBtn = button('皮肤文件夹', () => window.whale.openPath('skins'))
+  const cfgBtn = button('配置文件', () => openPath('config'))
+  const linesBtn = button('台词文件', () => openPath('lines'))
+  const skinsBtn = button('皮肤文件夹', () => openPath('skins'))
   openRow.appendChild(cfgBtn)
   openRow.appendChild(linesBtn)
   openRow.appendChild(skinsBtn)
   menuBox.appendChild(openRow)
 
   const openRow2 = menuRow()
-  const currentSkinBtn = button('当前皮肤', () => window.whale.openPath('skin'))
-  const peaksBtn = button('峰谷文案', () => window.whale.openPath('peaks'))
+  const currentSkinBtn = button('当前皮肤', () => openPath('skin'))
+  const peaksBtn = button('峰谷文案', () => openPath('peaks'))
   openRow2.appendChild(currentSkinBtn)
   openRow2.appendChild(peaksBtn)
   menuBox.appendChild(openRow2)
@@ -1490,9 +1491,36 @@ function button(text, onClick) {
   const b = document.createElement('button')
   b.type = 'button'
   b.className = 'btn'
+  b.draggable = false
   b.textContent = text
-  b.addEventListener('click', (e) => { e.stopPropagation(); onClick() })
+  let pointerTriggered = false
+  b.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    pointerTriggered = true
+    onClick()
+    setTimeout(() => { pointerTriggered = false }, 500)
+  })
+  b.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (pointerTriggered) {
+      pointerTriggered = false
+      return
+    }
+    onClick()
+  })
   return b
+}
+
+async function openPath(which) {
+  try {
+    window.whale.clientLog('openPath requested: ' + which).catch(() => {})
+    const ok = await window.whale.openPath(which)
+    window.whale.clientLog('openPath result: ' + which + '=' + !!ok).catch(() => {})
+  } catch (err) {
+    window.whale.clientLog('openPath failed: ' + which + ' ' + String((err && err.message) || err)).catch(() => {})
+  }
 }
 
 function toggleMenu() {
