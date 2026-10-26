@@ -1,4 +1,5 @@
 /build/
+/dist-release/
 /dist/
 /dist-installer/
 /*.exe
@@ -7,3 +8,5 @@
 /*.zip
 /frontend/wailsjs/
 node_modules/
+/rsrc
+/rsrc.syso

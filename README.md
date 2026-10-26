@@ -48,6 +48,15 @@ cd F:\whale-desktop
 
 不要直接使用不带标签的 `go build`，否则 Wails 会显示构建标签错误。
 
+生成绿色版 ZIP 和 Windows 安装程序：
+
+```powershell
+.\package.ps1 -Version 0.4.0
+```
+
+安装程序使用当前用户安装，不要求管理员权限；卸载时保留用户配置、皮肤、账本和日志。
+绿色版解压后直接运行 `WhaleDesktop.exe`。
+
 以后台方式启动：
 
 ```powershell
