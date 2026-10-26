@@ -1,0 +1,9 @@
+/build/
+/dist/
+/dist-installer/
+/*.exe
+/*.log
+/*.png
+/*.zip
+/frontend/wailsjs/
+node_modules/
